@@ -16,6 +16,10 @@
     .OK { background: #d4f5dd; color: #11632b; }
     .DUPLICADO { background: #fff3c4; color: #7a5b00; }
     .NO_ENCONTRADO, .INVALIDO, .ERROR { background: #fbd5d5; color: #8a1c1c; }
+    #datosQR { display: none; background: #fff; border-radius: 8px; padding: 8px; margin: 8px 0; font-size: 13px; }
+    #datosQR h2 { font-size: 14px; margin: 4px 0 8px; }
+    #datosQR table td { vertical-align: top; word-break: break-word; overflow-wrap: anywhere; }
+    #datosQR table td:first-child { font-weight: bold; width: 40%; color: #52606d; }
     table { width: 100%; border-collapse: collapse; background: #fff; font-size: 14px; }
     th, td { padding: 8px; border-bottom: 1px solid #e4e7eb; text-align: left; }
     #contador { font-weight: bold; margin: 12px 0 6px; }
@@ -30,6 +34,11 @@
 
   <div id="lector"></div>
   <div id="resultado"></div>
+
+  <div id="datosQR">
+    <h2>Datos leídos del QR</h2>
+    <table><tbody id="datosQRcuerpo"></tbody></table>
+  </div>
 
   <div id="contador"></div>
   <table>
@@ -80,28 +89,69 @@
     return String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   }
 
-  // Abre el paquete del QR y saca SOLO el teléfono (10 dígitos).
-  // Los demás datos (nacimiento, dirección, etc.) nunca se envían.
-  function extraerTelefono(texto) {
+  function texto(v) {
+    if (v === null || v === undefined) return '';
+    if (typeof v === 'object') return JSON.stringify(v);
+    return String(v);
+  }
+
+  // Abre el paquete del QR. Devuelve todos los datos, el teléfono (10 dígitos)
+  // y el nombre y área para registrar. Solo esos tres se envían al Sheet.
+  function analizarQR(textoQR) {
     let obj = null;
-    try { obj = JSON.parse(texto); } catch (e) {}
+    try { obj = JSON.parse(textoQR); } catch (e) {}
 
     if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
       const claves = Object.keys(obj);
-      const candidatas = claves.filter(function (k) {
+
+      let tel = null;
+      claves.filter(function (k) {
         return /(tel|cel|phone|movil)/.test(sinAcentos(k));
+      }).forEach(function (k) {
+        if (tel) return;
+        const dig = texto(obj[k]).replace(/\D/g, '');
+        if (dig.length >= 10) tel = dig.slice(-10);
       });
-      for (let i = 0; i < candidatas.length; i++) {
-        const dig = String(obj[candidatas[i]] == null ? '' : obj[candidatas[i]]).replace(/\D/g, '');
-        if (dig.length >= 10) return { tel: dig.slice(-10), claves: claves };
-      }
-      return { tel: null, claves: claves };
+
+      const partesNombre = claves.filter(function (k) {
+        const n = sinAcentos(k);
+        return /(nombre|apellido)/.test(n) && !/(fecha|empresa|puesto|area)/.test(n);
+      }).map(function (k) { return texto(obj[k]).trim(); }).filter(Boolean);
+
+      const claveArea = claves.filter(function (k) { return sinAcentos(k) === 'area'; })[0];
+
+      return {
+        todos: obj,
+        tel: tel,
+        nombre: partesNombre.join(' '),
+        area: claveArea ? texto(obj[claveArea]) : ''
+      };
     }
 
     // QR que no es paquete de datos: se toma el texto como teléfono
-    const dig = String(texto).replace(/\D/g, '');
-    if (dig.length >= 10) return { tel: dig.slice(-10), claves: [] };
-    return { tel: null, claves: [] };
+    const dig = String(textoQR).replace(/\D/g, '');
+    return {
+      todos: { Contenido: textoQR },
+      tel: dig.length >= 10 ? dig.slice(-10) : null,
+      nombre: '',
+      area: ''
+    };
+  }
+
+  function mostrarDatos(obj) {
+    const cuerpo = document.getElementById('datosQRcuerpo');
+    cuerpo.innerHTML = '';
+    Object.keys(obj).forEach(function (k) {
+      const tr = document.createElement('tr');
+      const td1 = document.createElement('td');
+      const td2 = document.createElement('td');
+      td1.textContent = k;
+      td2.textContent = texto(obj[k]);
+      tr.appendChild(td1);
+      tr.appendChild(td2);
+      cuerpo.appendChild(tr);
+    });
+    document.getElementById('datosQR').style.display = 'block';
   }
 
   function pitido(ok) {
@@ -123,7 +173,7 @@
     div.textContent = '';
     if (r.nombre) {
       const b = document.createElement('b');
-      b.textContent = r.nombre + ' (' + r.area + ')';
+      b.textContent = r.nombre + (r.area ? ' (' + r.area + ')' : '');
       div.appendChild(b);
       div.appendChild(document.createElement('br'));
     }
@@ -174,25 +224,30 @@
     }
   }
 
-  async function onScan(texto) {
+  async function onScan(textoQR) {
     const ahora = Date.now();
     if (ocupado) return;
-    if (texto === ultimoTexto && ahora - ultimoTiempo < 4000) return;
+    if (textoQR === ultimoTexto && ahora - ultimoTiempo < 4000) return;
     ocupado = true;
-    ultimoTexto = texto;
+    ultimoTexto = textoQR;
     ultimoTiempo = ahora;
 
-    const ext = extraerTelefono(texto);
-    if (!ext.tel) {
-      const campos = ext.claves.length ? ext.claves.join(', ') : '(el QR no es un paquete de datos)';
-      mostrar({ estado: 'INVALIDO', mensaje: 'No encontré el campo del teléfono. Campos del QR: ' + campos });
+    const info = analizarQR(textoQR);
+    mostrarDatos(info.todos);
+
+    if (!info.tel) {
+      mostrar({ estado: 'INVALIDO', mensaje: 'No encontré un teléfono en el QR. Los datos leídos se muestran abajo.' });
       pitido(false);
       setTimeout(function () { ocupado = false; }, 1200);
       return;
     }
 
     try {
-      const r = await llamar('registrar', { idCap: idCap(), texto: ext.tel });
+      const r = await llamar('registrar', {
+        idCap: idCap(),
+        texto: info.tel,
+        datos: { nombre: info.nombre, area: info.area }
+      });
       mostrar(r);
       pitido(r.estado === 'OK');
       if (r.estado === 'OK') cargarLista();
