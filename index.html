@@ -150,7 +150,8 @@
     const ahora = Date.now();
     if (ocupado) return;
     if (texto === ultimoTexto && ahora - ultimoTiempo < 4000) return;
-    ocupado = true;
+    ocupado = true; 
+    mostrar({ estado: 'INVALIDO', mensaje: 'Leí: ' + texto });
     ultimoTexto = texto;
     ultimoTiempo = ahora;
     try {
