@@ -12,7 +12,7 @@
     button { background: #1b6ca8; color: #fff; border: none; cursor: pointer; }
     button.sec { background: #52606d; }
     #lector { width: 100%; max-width: 400px; margin: 8px auto; }
-    #resultado { padding: 14px; border-radius: 8px; margin: 8px 0; font-size: 16px; display: none; }
+    #resultado { padding: 14px; border-radius: 8px; margin: 8px 0; font-size: 16px; display: none; word-break: break-word; overflow-wrap: anywhere; }
     .OK { background: #d4f5dd; color: #11632b; }
     .DUPLICADO { background: #fff3c4; color: #7a5b00; }
     .NO_ENCONTRADO, .INVALIDO, .ERROR { background: #fbd5d5; color: #8a1c1c; }
@@ -38,7 +38,7 @@
   </table>
 
 <script>
-  const API_URL = 'https://script.google.com/macros/s/AKfycbxjrElq-rrZrkRsNOjjdi9WBLfB5LXZxl3Et_Qc15v4ODmtDN8-BwmtjRNstJ4FtaZH/exec';
+  const API_URL = 'PEGA_AQUI_TU_URL_EXEC';
 
   let scanner = null;
   let ocupado = false;
@@ -49,7 +49,7 @@
     let c = '';
     try { c = localStorage.getItem('clave_asistencia') || ''; } catch (e) {}
     if (!c) {
-      c = prompt('Clave de acceso:') || '';
+      c = (prompt('Clave de acceso:') || '').trim();
       try { localStorage.setItem('clave_asistencia', c); } catch (e) {}
     }
     return c;
@@ -75,6 +75,34 @@
   }
 
   function idCap() { return document.getElementById('capacitacion').value; }
+
+  function sinAcentos(s) {
+    return String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  }
+
+  // Abre el paquete del QR y saca SOLO el teléfono (10 dígitos).
+  // Los demás datos (nacimiento, dirección, etc.) nunca se envían.
+  function extraerTelefono(texto) {
+    let obj = null;
+    try { obj = JSON.parse(texto); } catch (e) {}
+
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+      const claves = Object.keys(obj);
+      const candidatas = claves.filter(function (k) {
+        return /(tel|cel|phone|movil)/.test(sinAcentos(k));
+      });
+      for (let i = 0; i < candidatas.length; i++) {
+        const dig = String(obj[candidatas[i]] == null ? '' : obj[candidatas[i]]).replace(/\D/g, '');
+        if (dig.length >= 10) return { tel: dig.slice(-10), claves: claves };
+      }
+      return { tel: null, claves: claves };
+    }
+
+    // QR que no es paquete de datos: se toma el texto como teléfono
+    const dig = String(texto).replace(/\D/g, '');
+    if (dig.length >= 10) return { tel: dig.slice(-10), claves: [] };
+    return { tel: null, claves: [] };
+  }
 
   function pitido(ok) {
     try {
@@ -150,12 +178,21 @@
     const ahora = Date.now();
     if (ocupado) return;
     if (texto === ultimoTexto && ahora - ultimoTiempo < 4000) return;
-    ocupado = true; 
-    mostrar({ estado: 'INVALIDO', mensaje: 'Leí: ' + texto });
+    ocupado = true;
     ultimoTexto = texto;
     ultimoTiempo = ahora;
+
+    const ext = extraerTelefono(texto);
+    if (!ext.tel) {
+      const campos = ext.claves.length ? ext.claves.join(', ') : '(el QR no es un paquete de datos)';
+      mostrar({ estado: 'INVALIDO', mensaje: 'No encontré el campo del teléfono. Campos del QR: ' + campos });
+      pitido(false);
+      setTimeout(function () { ocupado = false; }, 1200);
+      return;
+    }
+
     try {
-      const r = await llamar('registrar', { idCap: idCap(), texto: texto });
+      const r = await llamar('registrar', { idCap: idCap(), texto: ext.tel });
       mostrar(r);
       pitido(r.estado === 'OK');
       if (r.estado === 'OK') cargarLista();
